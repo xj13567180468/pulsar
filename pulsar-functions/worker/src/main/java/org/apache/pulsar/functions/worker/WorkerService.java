@@ -48,28 +48,43 @@ import java.util.concurrent.ScheduledExecutorService;
 @Slf4j
 @Getter
 public class WorkerService {
-
+    //工作者配置
     private final WorkerConfig workerConfig;
-
+    //Pulsar 客户端
     private PulsarClient client;
+    //函数运行时管理器
     private FunctionRuntimeManager functionRuntimeManager;
+    //函数元数据管理器
     private FunctionMetaDataManager functionMetaDataManager;
+    //集群服务协调器
     private ClusterServiceCoordinator clusterServiceCoordinator;
-    // dlog namespace for storing function jars in bookkeeper
+    // DistributedLog Namespace 用于存储函数jars
     private Namespace dlogNamespace;
-    // storage client for accessing state storage for functions
+    // 存储客户端，函数用于访问状态存储器
     private StorageAdminClient stateStoreAdminClient;
+    //成员管理器
     private MembershipManager membershipManager;
+    //调度管理器
     private SchedulerManager schedulerManager;
+    //是否已初始化
     private boolean isInitialized = false;
+    //用于状态更新的定时服务
     private final ScheduledExecutorService statsUpdater;
+    //认证服务
     private AuthenticationService authenticationService;
+    //连接管理器
     private AuthorizationService authorizationService;
+    //Pulsar admin 客户端
     private ConnectorsManager connectorsManager;
+    //函数管理端
     private PulsarAdmin brokerAdmin;
+    //指标生成器
     private PulsarAdmin functionAdmin;
+    //指标生成器
     private final MetricsGenerator metricsGenerator;
+    //定时执行器
     private final ScheduledExecutorService executor;
+    //log存储路径
     @VisibleForTesting
     private URI dlogUri;
 

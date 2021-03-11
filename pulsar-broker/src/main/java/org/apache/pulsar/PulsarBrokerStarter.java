@@ -40,6 +40,7 @@ import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 
 import org.apache.bookkeeper.conf.ServerConfiguration;
+import org.apache.bookkeeper.discover.BookieServiceInfo;
 import org.apache.bookkeeper.proto.BookieServer;
 import org.apache.bookkeeper.replication.AutoRecoveryMain;
 import org.apache.bookkeeper.stats.StatsProvider;
@@ -133,18 +134,19 @@ public class PulsarBrokerStarter {
             JCommander jcommander = new JCommander(starterArguments);
             jcommander.setProgramName("PulsarBrokerStarter");
 
-            // parse args by JCommander
+            //JCommander 组件解析命令行
             jcommander.parse(args);
             if (starterArguments.help) {
                 jcommander.usage();
                 System.exit(-1);
             }
 
-            // init broker config
+            // 初始化解析命令行
             if (isBlank(starterArguments.brokerConfigFile)) {
                 jcommander.usage();
                 throw new IllegalArgumentException("Need to specify a configuration file for broker");
             } else {
+                //加载broker配置文件
                 brokerConfig = loadConfig(starterArguments.brokerConfigFile);
             }
 
@@ -162,15 +164,16 @@ public class PulsarBrokerStarter {
                 throw new IllegalArgumentException("Supported namespace bundle split algorithms must contains the default namespace bundle split algorithm");
             }
 
-            // init functions worker
+            // 初始化 functions worker ，判定是否启用函数工作者服务
             if (starterArguments.runFunctionsWorker || brokerConfig.isFunctionsWorkerEnabled()) {
                 WorkerConfig workerConfig;
+                //初始化函数工作者配置文件
                 if (isBlank(starterArguments.fnWorkerConfigFile)) {
                     workerConfig = new WorkerConfig();
                 } else {
                     workerConfig = WorkerConfig.load(starterArguments.fnWorkerConfigFile);
                 }
-                // worker talks to local broker
+                // 配置工作者与本地 broker 通信
                 String hostname = ServiceConfigurationUtils.getDefaultOrConfiguredAddress(
                     brokerConfig.getAdvertisedAddress());
                 workerConfig.setWorkerHostname(hostname);
@@ -179,7 +182,7 @@ public class PulsarBrokerStarter {
                     "c-" + brokerConfig.getClusterName()
                         + "-fw-" + hostname
                         + "-" + workerConfig.getWorkerPort());
-                // inherit broker authorization setting
+                // 代理授权设置
                 workerConfig.setAuthenticationEnabled(brokerConfig.isAuthenticationEnabled());
                 workerConfig.setAuthenticationProviders(brokerConfig.getAuthenticationProviders());
 
@@ -203,31 +206,33 @@ public class PulsarBrokerStarter {
 
                 functionsWorkerService = new WorkerService(workerConfig);
             } else {
+                //意味着不启用
                 functionsWorkerService = null;
             }
 
-            // init pulsar service
+            // 初始化pulsar服务
             pulsarService = new PulsarService(brokerConfig, Optional.ofNullable(functionsWorkerService));
 
-            // if no argument to run bookie in cmd line, read from pulsar config
+            // 如果在命令行中没有运行 bookie （命令），则尝试从 pulsar 配置文件中读取
             if (!argsContains(args, "-rb") && !argsContains(args, "--run-bookie")) {
                 checkState(starterArguments.runBookie == false,
                     "runBookie should be false if has no argument specified");
                 starterArguments.runBookie = brokerConfig.isEnableRunBookieTogether();
             }
+            // 加载顺序同上，表示是否启用 bookie 自动恢复服务
             if (!argsContains(args, "-ra") && !argsContains(args, "--run-bookie-autorecovery")) {
                 checkState(starterArguments.runBookieAutoRecovery == false,
                     "runBookieAutoRecovery should be false if has no argument specified");
                 starterArguments.runBookieAutoRecovery = brokerConfig.isEnableRunBookieAutoRecoveryTogether();
             }
-
+            //从这里可以看出，要么运行 bookie（读写） 服务，要么运行 bookie 自动恢复服务
             if ((starterArguments.runBookie || starterArguments.runBookieAutoRecovery)
                 && isBlank(starterArguments.bookieConfigFile)) {
                 jcommander.usage();
                 throw new IllegalArgumentException("No configuration file for Bookie");
             }
 
-            // init stats provider
+            // 初始化 bookie 状态提供者
             if (starterArguments.runBookie || starterArguments.runBookieAutoRecovery) {
                 checkState(isNotBlank(starterArguments.bookieConfigFile),
                     "No configuration file for Bookie");
@@ -239,16 +244,17 @@ public class PulsarBrokerStarter {
                 bookieStatsProvider = null;
             }
 
-            // init bookie server
+            // // 如果配置文件设置当前服务器运行 bookie 服务，则初始化 bookie 服务器
             if (starterArguments.runBookie) {
                 checkNotNull(bookieConfig, "No ServerConfiguration for Bookie");
                 checkNotNull(bookieStatsProvider, "No Stats Provider for Bookie");
-                bookieServer = new BookieServer(bookieConfig, bookieStatsProvider.getStatsLogger(""));
+                bookieServer = new BookieServer(
+                        bookieConfig, bookieStatsProvider.getStatsLogger(""), BookieServiceInfo.NO_INFO);
             } else {
                 bookieServer = null;
             }
 
-            // init bookie AutorecoveryMain
+            // 如果设置 bookie 自动恢复标志，则初始化 bookie 自动恢复服务
             if (starterArguments.runBookieAutoRecovery) {
                 checkNotNull(bookieConfig, "No ServerConfiguration for Bookie Autorecovery");
                 autoRecoveryMain = new AutoRecoveryMain(bookieConfig);
@@ -319,11 +325,13 @@ public class PulsarBrokerStarter {
 
     public static void main(String[] args) throws Exception {
         DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd hh:mm:ss,SSS");
+        //设置线程异常未catch情况下默认处理方法
         Thread.setDefaultUncaughtExceptionHandler((thread, exception) -> {
             System.out.println(String.format("%s [%s] error Uncaught exception in thread %s: %s", dateFormat.format(new Date()), thread.getContextClassLoader(), thread.getName(), exception.getMessage()));
         });
-
+        //创建 broker 启动器实例
         BrokerStarter starter = new BrokerStarter(args);
+        //安装JVM退出时钩子，即调用 broker 启动器关闭
         Runtime.getRuntime().addShutdownHook(
             new Thread(() -> {
                 starter.shutdown();
@@ -336,11 +344,13 @@ public class PulsarBrokerStarter {
         });
 
         try {
+            //调用启动器启动
             starter.start();
         } catch (Exception e) {
             log.error("Failed to start pulsar service.", e);
             Runtime.getRuntime().halt(1);
         } finally {
+            //等待启动器退出
             starter.join();
         }
     }
