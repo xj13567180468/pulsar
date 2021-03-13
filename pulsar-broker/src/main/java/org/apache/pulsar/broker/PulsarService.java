@@ -6,9 +6,9 @@
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
+ * <p>
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * <p>
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -142,81 +142,132 @@ import org.slf4j.LoggerFactory;
 @Setter(AccessLevel.PROTECTED)
 public class PulsarService implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(PulsarService.class);
+    //服务配置
     private ServiceConfiguration config = null;
+    //命名空间
     private NamespaceService nsService = null;
+    //Ledger 客户端工厂类（用于创建Ledger 客户端）
     private ManagedLedgerClientFactory managedLedgerClientFactory = null;
+    //领导者选举服务
     private LeaderElectionService leaderElectionService = null;
+    //Broker 服务
     private BrokerService brokerService = null;
+    //Web服务，处理Http请求用
     private WebService webService = null;
+    //WebSocket服务，用于支持WebSocket协议
     private WebSocketService webSocketService = null;
+    //配置缓存服务
     private ConfigurationCacheService configurationCacheService = null;
+    //本地Zookeeper缓存服务
     private LocalZooKeeperCacheService localZkCacheService = null;
+    //Bookeeper 客户端工厂
     private BookKeeperClientFactory bkClientFactory;
+    //Zookeeper缓存（用于本地集群配置和状态管理）
     private ZooKeeperCache localZkCache;
+    //全局Zookeeper缓存（用于跨地域复制集群配置）
     private GlobalZooKeeperCache globalZkCache;
+    //本地Zookeer连接服务提供者
     private LocalZooKeeperConnectionService localZooKeeperConnectionProvider;
+    //压缩器
     private Compactor compactor;
 
+    //调度线程池（pulsar核心线程池）
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(20,
             new DefaultThreadFactory("pulsar"));
+    //调度线程池（用于ZK缓存更新回调）
     private final ScheduledExecutorService cacheExecutor = Executors.newScheduledThreadPool(10,
             new DefaultThreadFactory("zk-cache-callback"));
+    //顺序执行线程池
     private OrderedExecutor orderedExecutor;
+    //调度线程池（用于负载管理使用，定时更新、上报系统负载信息）
     private final ScheduledExecutorService loadManagerExecutor;
+    //调度线程池 （用于压缩）
     private ScheduledExecutorService compactorExecutor;
+    //顺序调度器 （卸载服务使用）
     private OrderedScheduler offloaderScheduler;
+    //Ledger 卸载服务管理器
     private Offloaders offloaderManager = new Offloaders();
+    //Ledger 卸载加载器
     private LedgerOffloader defaultOffloader;
+
     private Map<NamespaceName, LedgerOffloader> ledgerOffloaderMap = new ConcurrentHashMap<>();
+    //负载报告任务
     private ScheduledFuture<?> loadReportTask = null;
+    //负载卸载任务
     private ScheduledFuture<?> loadSheddingTask = null;
+    //负载资源配额任务
     private ScheduledFuture<?> loadResourceQuotaTask = null;
+    //负载管理器（原子引用）
     private final AtomicReference<LoadManager> loadManager = new AtomicReference<>();
+    //Pulsar Admin 客户端
     private PulsarAdmin adminClient = null;
+    //Pulsar 客户端
     private PulsarClient client = null;
+    //Zookeeper 客户端工厂
     private ZooKeeperClientFactory zkClientFactory = null;
+    //绑定地址
     private final String bindAddress;
+    //通知地址
     private final String advertisedAddress;
+    //web服务地址（http用）
     private String webServiceAddress;
+    //web服务地址（https用）
     private String webServiceAddressTls;
+    //broker服务url（原生协议TCP）
     private String brokerServiceUrl;
+    //broker服务url（原生协议TCP+TLS）
     private String brokerServiceUrlTls;
+    //broker协议版本
     private final String brokerVersion;
+    //Schema存储--zk
     private SchemaStorage schemaStorage = null;
+    //Schema注册服务
     private SchemaRegistryService schemaRegistryService = null;
+    //工作者服务（支持函数式计算框架）
     private final Optional<WorkerService> functionWorkerService;
     private ProtocolHandlers protocolHandlers = null;
 
     private ShutdownService shutdownService;
-
+    //指标生成器
     private MetricsGenerator metricsGenerator;
     private TransactionMetadataStoreService transactionMetadataStoreService;
+
+    //Pulsar 状态
+    private volatile State state;
+    // 互斥锁（用于启动、关闭）
+    private final ReentrantLock mutex = new ReentrantLock();
+    // 监视 Pulsar 是否已关闭
+    private final Condition isClosedCondition = mutex.newCondition();
 
     public enum State {
         Init, Started, Closed
     }
 
-    private volatile State state;
-
-    private final ReentrantLock mutex = new ReentrantLock();
-    private final Condition isClosedCondition = mutex.newCondition();
-
+    //构造方法只有服务配置参数
     public PulsarService(ServiceConfiguration config) {
         this(config, Optional.empty());
     }
 
+    //构造方法，增加可选函数工作者服务
     public PulsarService(ServiceConfiguration config, Optional<WorkerService> functionWorkerService) {
-        // Validate correctness of configuration
+        // 验证当前配置是否可以
         PulsarConfigurationLoader.isComplete(config);
-
+        //设置当前状态为初始化
         state = State.Init;
+        //如果绑定地址没设置，则取主机名
         this.bindAddress = ServiceConfigurationUtils.getDefaultOrConfiguredAddress(config.getBindAddress());
+        //如果绑定地址没设置，则取主机名
         this.advertisedAddress = advertisedAddress(config);
+       //加载版本信息
         this.brokerVersion = PulsarVersion.getVersion();
+
         this.config = config;
+        //注册系统退出时的动作
         this.shutdownService = new MessagingServiceShutdownHook(this);
+        //创建负载管理线程池
         this.loadManagerExecutor = Executors
                 .newSingleThreadScheduledExecutor(new DefaultThreadFactory("pulsar-load-manager"));
+        //工作者服务（支持函数式计算框架）
         this.functionWorkerService = functionWorkerService;
     }
 
@@ -361,12 +412,12 @@ public class PulsarService implements AutoCloseable {
     public void start() throws PulsarServerException {
         mutex.lock();
 
-        LOG.info("Starting Pulsar Broker service; version: '{}'", ( brokerVersion != null ? brokerVersion : "unknown" )  );
+        LOG.info("Starting Pulsar Broker service; version: '{}'", (brokerVersion != null ? brokerVersion : "unknown"));
         LOG.info("Git Revision {}", PulsarVersion.getGitSha());
         LOG.info("Built by {} on {} at {}",
-                 PulsarVersion.getBuildUser(),
-                 PulsarVersion.getBuildHost(),
-                 PulsarVersion.getBuildTime());
+                PulsarVersion.getBuildUser(),
+                PulsarVersion.getBuildHost(),
+                PulsarVersion.getBuildTime());
 
         try {
             if (state != State.Init) {
@@ -382,7 +433,7 @@ public class PulsarService implements AutoCloseable {
             }
 
             orderedExecutor = OrderedExecutor.newBuilder().numThreads(8).name("pulsar-ordered")
-                    .build();
+                                             .build();
 
             // Initialize the message protocol handlers
             protocolHandlers = ProtocolHandlers.load(config);
@@ -478,7 +529,7 @@ public class PulsarService implements AutoCloseable {
 
             if (null != this.webSocketService) {
                 ClusterData clusterData =
-                    new ClusterData(webServiceAddress, webServiceAddressTls, brokerServiceUrl, brokerServiceUrlTls);
+                        new ClusterData(webServiceAddress, webServiceAddressTls, brokerServiceUrl, brokerServiceUrlTls);
                 this.webSocketService.setLocalCluster(clusterData);
             }
 
@@ -510,7 +561,7 @@ public class PulsarService implements AutoCloseable {
             // so that the protocol handlers can access broker service properly.
             this.protocolHandlers.start(brokerService);
             Map<String, Map<InetSocketAddress, ChannelInitializer<SocketChannel>>> protocolHandlerChannelInitializers =
-                this.protocolHandlers.newChannelInitializers();
+                    this.protocolHandlers.newChannelInitializers();
             this.brokerService.startProtocolHandlers(protocolHandlerChannelInitializers);
 
             state = State.Started;
@@ -811,20 +862,20 @@ public class PulsarService implements AutoCloseable {
         try {
             if (StringUtils.isNotBlank(offloadPolicies.getManagedLedgerOffloadDriver())) {
                 checkNotNull(offloadPolicies.getOffloadersDirectory(),
-                    "Offloader driver is configured to be '%s' but no offloaders directory is configured.",
+                        "Offloader driver is configured to be '%s' but no offloaders directory is configured.",
                         offloadPolicies.getManagedLedgerOffloadDriver());
                 this.offloaderManager = OffloaderUtils.searchForOffloaders(offloadPolicies.getOffloadersDirectory());
                 LedgerOffloaderFactory offloaderFactory = this.offloaderManager.getOffloaderFactory(
                         offloadPolicies.getManagedLedgerOffloadDriver());
                 try {
                     return offloaderFactory.create(
-                        offloadPolicies,
-                        ImmutableMap.of(
-                            LedgerOffloader.METADATA_SOFTWARE_VERSION_KEY.toLowerCase(), PulsarVersion.getVersion(),
-                            LedgerOffloader.METADATA_SOFTWARE_GITSHA_KEY.toLowerCase(), PulsarVersion.getGitSha()
-                        ),
-                        schemaStorage,
-                        getOffloaderScheduler(offloadPolicies));
+                            offloadPolicies,
+                            ImmutableMap.of(
+                                    LedgerOffloader.METADATA_SOFTWARE_VERSION_KEY.toLowerCase(), PulsarVersion.getVersion(),
+                                    LedgerOffloader.METADATA_SOFTWARE_GITSHA_KEY.toLowerCase(), PulsarVersion.getGitSha()
+                            ),
+                            schemaStorage,
+                            getOffloaderScheduler(offloadPolicies));
                 } catch (IOException ioe) {
                     throw new PulsarServerException(ioe.getMessage(), ioe.getCause());
                 }
@@ -906,8 +957,8 @@ public class PulsarService implements AutoCloseable {
         if (this.compactor == null) {
             try {
                 this.compactor = new TwoPhaseCompactor(this.getConfiguration(),
-                                                       getClient(), getBookKeeperClient(),
-                                                       getCompactorExecutor());
+                        getClient(), getBookKeeperClient(),
+                        getCompactorExecutor());
             } catch (Exception e) {
                 throw new PulsarServerException(e);
             }
@@ -918,8 +969,8 @@ public class PulsarService implements AutoCloseable {
     protected synchronized OrderedScheduler getOffloaderScheduler(OffloadPolicies offloadPolicies) {
         if (this.offloaderScheduler == null) {
             this.offloaderScheduler = OrderedScheduler.newSchedulerBuilder()
-                .numThreads(offloadPolicies.getManagedLedgerOffloadMaxThreads())
-                .name("offloader").build();
+                                                      .numThreads(offloadPolicies.getManagedLedgerOffloadMaxThreads())
+                                                      .name("offloader").build();
         }
         return this.offloaderScheduler;
     }
@@ -928,18 +979,18 @@ public class PulsarService implements AutoCloseable {
         if (this.client == null) {
             try {
                 ClientBuilder builder = PulsarClient.builder()
-                    .serviceUrl(this.getConfiguration().isTlsEnabled()
-                                ? this.brokerServiceUrlTls : this.brokerServiceUrl)
-                    .enableTls(this.getConfiguration().isTlsEnabled())
-                    .allowTlsInsecureConnection(this.getConfiguration().isTlsAllowInsecureConnection())
-                    .tlsTrustCertsFilePath(this.getConfiguration().getTlsCertificateFilePath());
+                                                    .serviceUrl(this.getConfiguration().isTlsEnabled()
+                                                            ? this.brokerServiceUrlTls : this.brokerServiceUrl)
+                                                    .enableTls(this.getConfiguration().isTlsEnabled())
+                                                    .allowTlsInsecureConnection(this.getConfiguration().isTlsAllowInsecureConnection())
+                                                    .tlsTrustCertsFilePath(this.getConfiguration().getTlsCertificateFilePath());
 
                 if (this.getConfiguration().isBrokerClientTlsEnabled()) {
                     if (this.getConfiguration().isBrokerClientTlsEnabledWithKeyStore()) {
                         builder.useKeyStoreTls(true)
-                                .tlsTrustStoreType(this.getConfiguration().getBrokerClientTlsTrustStoreType())
-                                .tlsTrustStorePath(this.getConfiguration().getBrokerClientTlsTrustStore())
-                                .tlsTrustStorePassword(this.getConfiguration().getBrokerClientTlsTrustStorePassword());
+                               .tlsTrustStoreType(this.getConfiguration().getBrokerClientTlsTrustStoreType())
+                               .tlsTrustStorePath(this.getConfiguration().getBrokerClientTlsTrustStore())
+                               .tlsTrustStorePassword(this.getConfiguration().getBrokerClientTlsTrustStorePassword());
                     } else {
                         builder.tlsTrustCertsFilePath(
                                 isNotBlank(this.getConfiguration().getBrokerClientTrustCertsFilePath())
@@ -950,7 +1001,7 @@ public class PulsarService implements AutoCloseable {
 
                 if (isNotBlank(this.getConfiguration().getBrokerClientAuthenticationPlugin())) {
                     builder.authentication(this.getConfiguration().getBrokerClientAuthenticationPlugin(),
-                                           this.getConfiguration().getBrokerClientAuthenticationParameters());
+                            this.getConfiguration().getBrokerClientAuthenticationParameters());
                 }
                 this.client = builder.build();
             } catch (Exception e) {
@@ -966,16 +1017,16 @@ public class PulsarService implements AutoCloseable {
                 ServiceConfiguration conf = this.getConfiguration();
                 String adminApiUrl = conf.isBrokerClientTlsEnabled() ? webServiceAddressTls : webServiceAddress;
                 PulsarAdminBuilder builder = PulsarAdmin.builder().serviceHttpUrl(adminApiUrl) //
-                        .authentication( //
-                                conf.getBrokerClientAuthenticationPlugin(), //
-                                conf.getBrokerClientAuthenticationParameters());
+                                                        .authentication( //
+                                                                conf.getBrokerClientAuthenticationPlugin(), //
+                                                                conf.getBrokerClientAuthenticationParameters());
 
                 if (conf.isBrokerClientTlsEnabled()) {
                     if (conf.isBrokerClientTlsEnabledWithKeyStore()) {
                         builder.useKeyStoreTls(true)
-                                .tlsTrustStoreType(conf.getBrokerClientTlsTrustStoreType())
-                                .tlsTrustStorePath(conf.getBrokerClientTlsTrustStore())
-                                .tlsTrustStorePassword(conf.getBrokerClientTlsTrustStorePassword());
+                               .tlsTrustStoreType(conf.getBrokerClientTlsTrustStoreType())
+                               .tlsTrustStorePath(conf.getBrokerClientTlsTrustStore())
+                               .tlsTrustStorePassword(conf.getBrokerClientTlsTrustStorePassword());
                     } else {
                         builder.tlsTrustCertsFilePath(conf.getBrokerClientTrustCertsFilePath());
                     }
@@ -1092,7 +1143,7 @@ public class PulsarService implements AutoCloseable {
                 workerConfig.setPulsarWebServiceUrl(webServiceAddress);
             }
             String namespace = functionWorkerService.get()
-                    .getWorkerConfig().getPulsarFunctionsNamespace();
+                                                    .getWorkerConfig().getPulsarFunctionsNamespace();
             String[] a = functionWorkerService.get().getWorkerConfig().getPulsarFunctionsNamespace().split("/");
             String property = a[0];
             String cluster = functionWorkerService.get().getWorkerConfig().getPulsarFunctionsCluster();
