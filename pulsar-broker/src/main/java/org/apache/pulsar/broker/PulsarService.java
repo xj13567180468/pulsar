@@ -420,6 +420,7 @@ public class PulsarService implements AutoCloseable {
                 PulsarVersion.getBuildTime());
 
         try {
+            // 状态检查，如果已是初始化状态，则抛异常
             if (state != State.Init) {
                 throw new PulsarServerException("Cannot start the service once it was stopped");
             }
@@ -435,27 +436,28 @@ public class PulsarService implements AutoCloseable {
             orderedExecutor = OrderedExecutor.newBuilder().numThreads(8).name("pulsar-ordered")
                                              .build();
 
-            // Initialize the message protocol handlers
+            // 初始化消息协议处理流程
             protocolHandlers = ProtocolHandlers.load(config);
             protocolHandlers.initialize(config);
 
-            // Now we are ready to start services
+            // 1. 首先连接本地Zookeeper，并注册系统关闭hook
             localZooKeeperConnectionProvider = new LocalZooKeeperConnectionService(getZooKeeperClientFactory(),
                     config.getZookeeperServers(), config.getZooKeeperSessionTimeoutMillis());
             localZooKeeperConnectionProvider.start(shutdownService);
 
-            // Initialize and start service to access configuration repository.
+            //2. 初始化和启动访问配置仓库，包括本地（local）集群缓存和全局（global）集群缓存
             this.startZkCacheService();
-
+            //3. 创建 bookkeeper 客户端工厂
             this.bkClientFactory = newBookKeeperClientFactory();
+            //创建管理 Ledger 管理客户端工厂
             managedLedgerClientFactory = new ManagedLedgerClientFactory(config, getZkClient(), bkClientFactory);
-
+            //4. 创建并初始化 broker 服务
             this.brokerService = new BrokerService(this);
 
-            // Start load management service (even if load balancing is disabled)
+            //5. 创建并设置负载管理器
             this.loadManager.set(LoadManager.create(this));
 
-            // needs load management service and before start broker service,
+            //7. 创建并启动 Namespace 服务
             this.startNamespaceService();
 
             schemaStorage = createAndStartSchemaStorage();
@@ -464,9 +466,9 @@ public class PulsarService implements AutoCloseable {
 
             this.defaultOffloader = createManagedLedgerOffloader(
                     OffloadPolicies.create(this.getConfiguration().getProperties()));
-
+            //9. 启动 broker 服务
             brokerService.start();
-
+            //10. 创建并初始化Web服务
             this.webService = new WebService(this);
             Map<String, Object> attributeMap = Maps.newHashMap();
             attributeMap.put(WebService.ATTRIBUTE_PULSAR_NAME, this);
@@ -475,10 +477,11 @@ public class PulsarService implements AutoCloseable {
             vipAttributeMap.put(VipStatus.ATTRIBUTE_IS_READY_PROBE, new Supplier<Boolean>() {
                 @Override
                 public Boolean get() {
-                    // Ensure the VIP status is only visible when the broker is fully initialized
+                    // 当 broker 已经完成初始化后，确保这 VIP 状态可见
                     return state == State.Started;
                 }
             });
+            //这里添加请求服务
             this.webService.addRestResources("/", VipStatus.class.getPackage().getName(), false, vipAttributeMap);
             this.webService.addRestResources("/", "org.apache.pulsar.broker.web", false, attributeMap);
             this.webService.addRestResources("/admin", "org.apache.pulsar.broker.admin.v1", true, attributeMap);
@@ -489,7 +492,7 @@ public class PulsarService implements AutoCloseable {
             this.webService.addServlet("/metrics",
                     new ServletHolder(new PrometheusMetricsServlet(this, config.isExposeTopicLevelMetricsInPrometheus(), config.isExposeConsumerLevelMetricsInPrometheus())),
                     false, attributeMap);
-
+            // 11. 如果Websocket服务启用，则创建和启动Websocket服务
             if (config.isWebSocketServiceEnabled()) {
                 // Use local broker address to avoid different IP address when using a VIP for service discovery
                 this.webSocketService = new WebSocketService(null, config);

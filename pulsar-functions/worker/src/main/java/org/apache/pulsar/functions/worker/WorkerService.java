@@ -102,6 +102,7 @@ public class WorkerService {
                       AuthorizationService authorizationService) throws InterruptedException {
         log.info("Starting worker {}...", workerConfig.getWorkerId());
 
+        //打印配置
         try {
             log.info("Worker Configs: {}", new ObjectMapper().writerWithDefaultPrettyPrinter()
                     .writeValueAsString(workerConfig));
@@ -109,9 +110,11 @@ public class WorkerService {
             log.warn("Failed to print worker configs with error {}", e.getMessage(), e);
         }
 
+        //创建dlog namespace存储函数包
         try {
             // create the dlog namespace for storing function packages
             this.dlogUri = dlogUri;
+            //创建DistributedLog 配置文件
             DistributedLogConfiguration dlogConf = WorkerUtils.getDlogConf(workerConfig);
             try {
                 this.dlogNamespace = NamespaceBuilder.newBuilder()
@@ -125,7 +128,7 @@ public class WorkerService {
                 throw new RuntimeException(e);
             }
 
-            // create the state storage client for accessing function state
+            // 如果状态存储服务url不为空，则尝试创建状态存储客户端用于存储函数状态
             if (workerConfig.getStateStorageServiceUrl() != null) {
                 StorageClientSettings clientSettings = StorageClientSettings.newBuilder()
                         .serviceUri(workerConfig.getStateStorageServiceUrl())
@@ -139,6 +142,7 @@ public class WorkerService {
                     ? workerConfig.getFunctionWebServiceUrl()
                     : workerConfig.getWorkerWebAddress();
 
+            //如果认证启动
             if (workerConfig.isAuthenticationEnabled()) {
                 this.brokerAdmin = WorkerUtils.getPulsarAdminClient(workerConfig.getPulsarWebServiceUrl(),
                     workerConfig.getClientAuthenticationPlugin(), workerConfig.getClientAuthenticationParameters(),
@@ -167,14 +171,14 @@ public class WorkerService {
             brokerAdmin.topics().createNonPartitionedTopic(workerConfig.getFunctionAssignmentTopic());
             brokerAdmin.topics().createNonPartitionedTopic(workerConfig.getClusterCoordinationTopic());
             brokerAdmin.topics().createNonPartitionedTopic(workerConfig.getFunctionMetadataTopic());
-            //create scheduler manager
+            //创建调度管理器
             this.schedulerManager = new SchedulerManager(this.workerConfig, this.client, this.brokerAdmin,
                     this.executor);
 
-            //create function meta data manager
+            //创建函数元数据管理器
             this.functionMetaDataManager = new FunctionMetaDataManager(
                     this.workerConfig, this.schedulerManager, this.client);
-
+            //创建连接池管理器
             this.connectorsManager = new ConnectorsManager(workerConfig);
 
             //create membership manager
@@ -184,42 +188,43 @@ public class WorkerService {
             }
             this.membershipManager = new MembershipManager(this, this.client, this.brokerAdmin);
 
-            // create function runtime manager
+            //创建成员管理器
             this.functionRuntimeManager = new FunctionRuntimeManager(
                     this.workerConfig, this, this.dlogNamespace, this.membershipManager, connectorsManager, functionMetaDataManager);
 
-            // Setting references to managers in scheduler
+            //协调管理器设置元数据、运行时、成员管理器
             this.schedulerManager.setFunctionMetaDataManager(this.functionMetaDataManager);
             this.schedulerManager.setFunctionRuntimeManager(this.functionRuntimeManager);
             this.schedulerManager.setMembershipManager(this.membershipManager);
 
-            // initialize function metadata manager
+            //初始化函数元数据管理器
             this.functionMetaDataManager.initialize();
 
-            // initialize function runtime manager
+            //初始化函数运行时管理器
             this.functionRuntimeManager.initialize();
-
+            //创建认证服务
             this.authenticationService = authenticationService;
 
             this.authorizationService = authorizationService;
 
             // Starting cluster services
             log.info("Start cluster services...");
+            //创建集群服务协调器
             this.clusterServiceCoordinator = new ClusterServiceCoordinator(
                     this.workerConfig.getWorkerId(),
                     membershipManager);
-
+            //增加成员监控任务
             this.clusterServiceCoordinator.addTask("membership-monitor",
                     this.workerConfig.getFailureCheckFreqMs(),
                     () -> membershipManager.checkFailures(
                             functionMetaDataManager, functionRuntimeManager, schedulerManager));
-
+            //启动集群服务协调器
             this.clusterServiceCoordinator.start();
 
-            // Start function runtime manager
+            // 启动集群服务协调器
             this.functionRuntimeManager.start();
 
-            // indicate function worker service is done initializing
+            // 设置函数工作者初始化标志
             this.isInitialized = true;
         } catch (Throwable t) {
             log.error("Error Starting up in worker", t);
